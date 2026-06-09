@@ -23,8 +23,11 @@ jobs:
         with:
           terraform_version: latest
 
-      - name: Terraform Init
-        run: terraform init
+      - name: Terraform Get Modules
+        run: |
+          terraform get
+          echo "✅ All modules downloaded successfully"
+        continue-on-error: false
         env:
           TF_LOG: INFO
 
@@ -32,9 +35,14 @@ jobs:
         run: |
           echo "=== Downloaded Terraform Modules ==="
           if [ -d ".terraform/modules" ]; then
-            find .terraform/modules -type f -name "*.tf" | head -20
+            echo "Modules downloaded:"
+            ls -1 .terraform/modules/
             echo "---"
+            echo "Total size:"
             du -sh .terraform/modules
+            echo "---"
+            echo "Sample .tf files:"
+            find .terraform/modules -type f -name "*.tf" | head -10
           else
             echo "No modules directory found"
           fi

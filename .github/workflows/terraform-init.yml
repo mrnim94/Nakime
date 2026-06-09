@@ -1,0 +1,56 @@
+name: Terraform Init - AWS Modules Cache
+
+on:
+  schedule:
+    # Chạy mỗi 30 phút
+    - cron: '*/30 * * * *'
+  workflow_dispatch:  # Cho phép chạy manual
+  push:
+    branches: [ main, master ]
+    paths:
+      - '**.tf'
+
+jobs:
+  terraform-init:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: latest
+
+      - name: Terraform Init
+        run: terraform init
+        env:
+          TF_LOG: INFO
+
+      - name: List downloaded modules
+        run: |
+          echo "=== Downloaded Terraform Modules ==="
+          if [ -d ".terraform/modules" ]; then
+            find .terraform/modules -type f -name "*.tf" | head -20
+            echo "---"
+            du -sh .terraform/modules
+          else
+            echo "No modules directory found"
+          fi
+
+      - name: Cache Terraform modules
+        uses: actions/cache@v3
+        with:
+          path: |
+            .terraform/modules
+            .terraform/providers
+          key: terraform-${{ hashFiles('**/*.tf') }}
+          restore-keys: |
+            terraform-
+
+      - name: Summary
+        run: |
+          echo "✅ Terraform init completed successfully"
+          echo "📦 Modules from aws-terraform-module namespace cached"
+          terraform version

@@ -1,4 +1,4 @@
-name: Terraform Init - AWS Modules Cache
+name: Terraform Init - Force Download
 
 on:
   schedule:
@@ -23,8 +23,15 @@ jobs:
         with:
           terraform_version: latest
 
+      - name: Clean old modules (force fresh download)
+        run: |
+          echo "🗑️ Cleaning old modules to force fresh download from registry..."
+          rm -rf .terraform
+          echo "✅ Ready for fresh download"
+
       - name: Terraform Get Modules
         run: |
+          echo "📦 Downloading modules from registry..."
           # Download modules (ignore validation errors - we only care about download count)
           terraform get || echo "⚠️ Validation errors ignored - modules downloaded successfully"
           echo "✅ Module download completed"
@@ -47,18 +54,9 @@ jobs:
             echo "No modules directory found"
           fi
 
-      - name: Cache Terraform modules
-        uses: actions/cache@v3
-        with:
-          path: |
-            .terraform/modules
-            .terraform/providers
-          key: terraform-${{ hashFiles('**/*.tf') }}
-          restore-keys: |
-            terraform-
-
       - name: Summary
         run: |
-          echo "✅ Terraform init completed successfully"
-          echo "📦 Modules from aws-terraform-module namespace cached"
+          echo "✅ Terraform get completed successfully"
+          echo "📦 Fresh modules downloaded from aws-terraform-module namespace"
+          echo "🔄 Next run in 30 minutes"
           terraform version

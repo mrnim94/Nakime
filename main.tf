@@ -30,6 +30,18 @@ locals {
   cluster_name = "dummy-cluster"
   vpc_id       = "vpc-dummy123"
   subnet_ids   = ["subnet-dummy1", "subnet-dummy2"]
+
+  # Azure dummy values
+  azure_location           = "eastus"
+  azure_resource_group     = "dummy-rg"
+  azure_mongodb_name       = "dummy-mongodb"
+  azure_vnet_name          = "dummy-vnet"
+  azure_address_space      = ["10.0.0.0/16"]
+  azure_subnet_prefixes    = ["10.0.1.0/24"]
+  azure_aks_name           = "dummy-aks"
+  azure_namespace_name     = "dummy-namespace"
+  azure_eventhub_name      = "dummy-eventhub"
+
 }
 
 # 1. eks-windows (1954 downloads)

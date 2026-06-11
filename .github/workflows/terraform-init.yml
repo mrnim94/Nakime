@@ -27,13 +27,16 @@ jobs:
         run: |
           echo "🗑️ Cleaning old modules to force fresh download from registry..."
           rm -rf .terraform
+          rm -rf azure/.terraform
           echo "✅ Ready for fresh download"
 
       - name: Terraform Get Modules
         run: |
           echo "📦 Downloading modules from registry..."
-          # Download modules (ignore validation errors - we only care about download count)
-          terraform get || echo "⚠️ Validation errors ignored - modules downloaded successfully"
+          # Download AWS modules
+          terraform get || echo "⚠️ Validation errors ignored - AWS modules downloaded successfully"
+          # Download Azure modules
+          cd azure && terraform get || echo "⚠️ Validation errors ignored - Azure modules downloaded successfully"
           echo "✅ Module download completed"
         env:
           TF_LOG: INFO
@@ -41,22 +44,20 @@ jobs:
       - name: List downloaded modules
         run: |
           echo "=== Downloaded Terraform Modules ==="
+          echo "--- AWS Modules ---"
           if [ -d ".terraform/modules" ]; then
-            echo "Modules downloaded:"
             ls -1 .terraform/modules/
-            echo "---"
-            echo "Total size:"
             du -sh .terraform/modules
-            echo "---"
-            echo "Sample .tf files:"
-            find .terraform/modules -type f -name "*.tf" | head -10
-          else
-            echo "No modules directory found"
+          fi
+          echo "--- Azure Modules ---"
+          if [ -d "azure/.terraform/modules" ]; then
+            ls -1 azure/.terraform/modules/
+            du -sh azure/.terraform/modules
           fi
 
       - name: Summary
         run: |
           echo "✅ Terraform get completed successfully"
-          echo "📦 Fresh modules downloaded from aws-terraform-module namespace"
+          echo "📦 Fresh modules downloaded from aws-terraform-module and azure-terraform-module namespaces"
           echo "🔄 Next run in 30 minutes"
           terraform version

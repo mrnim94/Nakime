@@ -2,8 +2,9 @@ name: Terraform Init - Force Download
 
 on:
   schedule:
-    # Chạy mỗi 30 phút
-    - cron: '*/30 * * * *'
+    # GitHub scheduled workflows are best-effort and often delayed/dropped at busy :00/:30 marks.
+    # Run twice per hour at off-peak minutes to approximate every 30 minutes more reliably.
+    - cron: '7,37 * * * *'
   workflow_dispatch:  # Cho phép chạy manual
   push:
     branches: [ main, master ]

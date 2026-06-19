@@ -1,0 +1,221 @@
+name: Docker Images Pull and Trivy Scan
+
+on:
+  schedule:
+    # Run once per hour. GitHub scheduled workflows are best-effort and may be delayed.
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      tags_per_repo:
+        description: 'Number of newest Docker Hub tags to pull/scan per repository'
+        required: false
+        default: '3'
+      max_repos:
+        description: 'Maximum number of repositories to process'
+        required: false
+        default: '100'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-images-trivy-scan
+  cancel-in-progress: false
+
+jobs:
+  pull-and-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      DOCKERHUB_ORG: antiantiops
+      TAGS_PER_REPO: ${{ github.event.inputs.tags_per_repo || '3' }}
+      MAX_REPOS: ${{ github.event.inputs.max_repos || '100' }}
+      TRIVY_CACHE_DIR: .trivy-cache
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore Trivy cache
+        uses: actions/cache@v4
+        with:
+          path: .trivy-cache
+          key: trivy-cache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            trivy-cache-${{ runner.os }}-
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@v0.2.4
+        with:
+          version: latest
+
+      - name: Discover Docker Hub repositories and tags
+        run: |
+          set -euo pipefail
+
+          mkdir -p scan-results
+          : > scan-results/repos.txt
+          : > scan-results/images.txt
+
+          echo "Discovering repositories from Docker Hub org: ${DOCKERHUB_ORG}"
+
+          page=1
+          while :; do
+            url="https://hub.docker.com/v2/repositories/${DOCKERHUB_ORG}/?page_size=100&page=${page}"
+            echo "Fetching repositories page ${page}: ${url}"
+            response="$(curl -fsSL --retry 3 --retry-delay 5 "$url")"
+
+            echo "$response" | jq -r '.results[].name' >> scan-results/repos.txt
+
+            next="$(echo "$response" | jq -r '.next // empty')"
+            [ -z "$next" ] && break
+            page=$((page + 1))
+          done
+
+          sort -u scan-results/repos.txt -o scan-results/repos.txt
+          head -n "${MAX_REPOS}" scan-results/repos.txt > scan-results/repos.limited.txt
+          mv scan-results/repos.limited.txt scan-results/repos.txt
+
+          echo "Repositories selected:"
+          nl -ba scan-results/repos.txt
+
+          while read -r repo; do
+            [ -z "$repo" ] && continue
+            tags_url="https://hub.docker.com/v2/repositories/${DOCKERHUB_ORG}/${repo}/tags?page_size=${TAGS_PER_REPO}&ordering=last_updated"
+            echo "Fetching tags for ${DOCKERHUB_ORG}/${repo}: ${tags_url}"
+
+            curl -fsSL --retry 3 --retry-delay 5 "$tags_url" \
+              | jq -r --arg org "$DOCKERHUB_ORG" --arg repo "$repo" '
+                  .results[]
+                  | select(.name != null)
+                  | select((.name | endswith(".sig") | not) and (.name | endswith(".att") | not) and (.name | endswith(".metadata") | not))
+                  | "\($org)/\($repo):\(.name)"
+                ' \
+              >> scan-results/images.txt || echo "WARN: failed to fetch tags for ${DOCKERHUB_ORG}/${repo}"
+          done < scan-results/repos.txt
+
+          sort -u scan-results/images.txt -o scan-results/images.txt
+
+          echo "Images selected for pull and scan:"
+          nl -ba scan-results/images.txt
+
+          echo "## Images selected for pull and Trivy scan" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          nl -ba scan-results/images.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Pull images and scan with Trivy
+        run: |
+          set -euo pipefail
+
+          : > scan-results/pulled-images.txt
+          : > scan-results/scanned-images.txt
+          : > scan-results/failed-images.txt
+          : > scan-results/summary.tsv
+
+          total="$(wc -l < scan-results/images.txt | tr -d ' ')"
+          current=0
+
+          while read -r image; do
+            [ -z "$image" ] && continue
+            current=$((current + 1))
+
+            safe_name="$(echo "$image" | tr '/:@' '___' | tr -cd 'A-Za-z0-9_.-')"
+            report_file="scan-results/${safe_name}.json"
+
+            echo "::group::[$current/$total] Pull $image"
+            if docker pull "$image"; then
+              echo "$image" >> scan-results/pulled-images.txt
+              echo "PULLED: $image"
+            else
+              echo -e "$image\tpull_failed" >> scan-results/failed-images.txt
+              echo "PULL_FAILED: $image"
+              echo "::endgroup::"
+              continue
+            fi
+            echo "::endgroup::"
+
+            echo "::group::[$current/$total] Trivy scan $image"
+            if trivy image \
+                --cache-dir "$TRIVY_CACHE_DIR" \
+                --no-progress \
+                --severity HIGH,CRITICAL \
+                --format json \
+                --output "$report_file" \
+                "$image"; then
+              echo "$image" >> scan-results/scanned-images.txt
+
+              critical="$(jq '[.Results[]? | .Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' "$report_file")"
+              high="$(jq '[.Results[]? | .Vulnerabilities[]? | select(.Severity == "HIGH")] | length' "$report_file")"
+              echo -e "$image\t$critical\t$high" >> scan-results/summary.tsv
+              echo "SCANNED: $image critical=$critical high=$high report=$report_file"
+            else
+              echo -e "$image\tscan_failed" >> scan-results/failed-images.txt
+              echo "SCAN_FAILED: $image"
+            fi
+            echo "::endgroup::"
+          done < scan-results/images.txt
+
+      - name: Print scan summary
+        if: always()
+        run: |
+          set -euo pipefail
+
+          echo "=== Pulled images ==="
+          cat scan-results/pulled-images.txt 2>/dev/null || true
+
+          echo "=== Successfully scanned images ==="
+          cat scan-results/scanned-images.txt 2>/dev/null || true
+
+          echo "=== Failed images ==="
+          cat scan-results/failed-images.txt 2>/dev/null || true
+
+          echo "=== Vulnerability summary: image / critical / high ==="
+          if [ -s scan-results/summary.tsv ]; then
+            column -t -s $'\t' scan-results/summary.tsv
+          else
+            echo "No successful scans."
+          fi
+
+          {
+            echo "## Docker pull + Trivy scan summary"
+            echo ""
+            echo "### Pulled images"
+            echo '```'
+            cat scan-results/pulled-images.txt 2>/dev/null || true
+            echo '```'
+            echo ""
+            echo "### Scanned images"
+            echo '```'
+            cat scan-results/scanned-images.txt 2>/dev/null || true
+            echo '```'
+            echo ""
+            echo "### Failed images"
+            echo '```'
+            cat scan-results/failed-images.txt 2>/dev/null || true
+            echo '```'
+            echo ""
+            echo "### Vulnerability summary: image / critical / high"
+            echo '```'
+            if [ -s scan-results/summary.tsv ]; then
+              column -t -s $'\t' scan-results/summary.tsv
+            else
+              echo "No successful scans."
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Trivy scan artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-scan-results
+          path: scan-results/
+          retention-days: 14

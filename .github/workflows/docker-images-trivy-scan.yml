@@ -56,52 +56,65 @@ jobs:
         with:
           version: latest
 
-      - name: Discover Docker Hub repositories and tags
+      - name: Build image list
         run: |
           set -euo pipefail
 
           mkdir -p scan-results
-          : > scan-results/repos.txt
           : > scan-results/images.txt
 
-          echo "Discovering repositories from Docker Hub org: ${DOCKERHUB_ORG}"
+          if [ -s .github/docker-images.txt ]; then
+            echo "Using explicit image list from .github/docker-images.txt"
+            sed 's/[[:space:]]*#.*$//' .github/docker-images.txt \
+              | awk 'NF {print $1}' \
+              | sort -u \
+              > scan-results/images.txt
+          else
+            echo "No .github/docker-images.txt found; discovering repositories from Docker Hub org: ${DOCKERHUB_ORG}"
+            : > scan-results/repos.txt
 
-          page=1
-          while :; do
-            url="https://hub.docker.com/v2/repositories/${DOCKERHUB_ORG}/?page_size=100&page=${page}"
-            echo "Fetching repositories page ${page}: ${url}"
-            response="$(curl -fsSL --retry 3 --retry-delay 5 "$url")"
+            page=1
+            while :; do
+              url="https://hub.docker.com/v2/repositories/${DOCKERHUB_ORG}/?page_size=100&page=${page}"
+              echo "Fetching repositories page ${page}: ${url}"
+              response="$(curl -fsSL --retry 3 --retry-delay 5 "$url")"
 
-            echo "$response" | jq -r '.results[].name' >> scan-results/repos.txt
+              echo "$response" | jq -r '.results[].name' >> scan-results/repos.txt
 
-            next="$(echo "$response" | jq -r '.next // empty')"
-            [ -z "$next" ] && break
-            page=$((page + 1))
-          done
+              next="$(echo "$response" | jq -r '.next // empty')"
+              [ -z "$next" ] && break
+              page=$((page + 1))
+            done
 
-          sort -u scan-results/repos.txt -o scan-results/repos.txt
-          head -n "${MAX_REPOS}" scan-results/repos.txt > scan-results/repos.limited.txt
-          mv scan-results/repos.limited.txt scan-results/repos.txt
+            sort -u scan-results/repos.txt -o scan-results/repos.txt
+            head -n "${MAX_REPOS}" scan-results/repos.txt > scan-results/repos.limited.txt
+            mv scan-results/repos.limited.txt scan-results/repos.txt
 
-          echo "Repositories selected:"
-          nl -ba scan-results/repos.txt
+            echo "Repositories selected:"
+            nl -ba scan-results/repos.txt
 
-          while read -r repo; do
-            [ -z "$repo" ] && continue
-            tags_url="https://hub.docker.com/v2/repositories/${DOCKERHUB_ORG}/${repo}/tags?page_size=${TAGS_PER_REPO}&ordering=last_updated"
-            echo "Fetching tags for ${DOCKERHUB_ORG}/${repo}: ${tags_url}"
+            while read -r repo; do
+              [ -z "$repo" ] && continue
+              tags_url="https://hub.docker.com/v2/repositories/${DOCKERHUB_ORG}/${repo}/tags?page_size=${TAGS_PER_REPO}&ordering=last_updated"
+              echo "Fetching tags for ${DOCKERHUB_ORG}/${repo}: ${tags_url}"
 
-            curl -fsSL --retry 3 --retry-delay 5 "$tags_url" \
-              | jq -r --arg org "$DOCKERHUB_ORG" --arg repo "$repo" '
-                  .results[]
-                  | select(.name != null)
-                  | select((.name | endswith(".sig") | not) and (.name | endswith(".att") | not) and (.name | endswith(".metadata") | not))
-                  | "\($org)/\($repo):\(.name)"
-                ' \
-              >> scan-results/images.txt || echo "WARN: failed to fetch tags for ${DOCKERHUB_ORG}/${repo}"
-          done < scan-results/repos.txt
+              curl -fsSL --retry 3 --retry-delay 5 "$tags_url" \
+                | jq -r --arg org "$DOCKERHUB_ORG" --arg repo "$repo" '
+                    .results[]
+                    | select(.name != null)
+                    | select((.name | endswith(".sig") | not) and (.name | endswith(".att") | not) and (.name | endswith(".metadata") | not))
+                    | "\($org)/\($repo):\(.name)"
+                  ' \
+                >> scan-results/images.txt || echo "WARN: failed to fetch tags for ${DOCKERHUB_ORG}/${repo}"
+            done < scan-results/repos.txt
 
-          sort -u scan-results/images.txt -o scan-results/images.txt
+            sort -u scan-results/images.txt -o scan-results/images.txt
+          fi
+
+          if [ ! -s scan-results/images.txt ]; then
+            echo "ERROR: no images selected" >&2
+            exit 1
+          fi
 
           echo "Images selected for pull and scan:"
           nl -ba scan-results/images.txt

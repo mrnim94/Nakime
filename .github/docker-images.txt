@@ -1,0 +1,7 @@
+# One image per line. Empty lines and # comments are ignored.
+# Add/remove images here when you want to control exactly what the workflow pulls and scans.
+antiantiops/9router:latest
+antiantiops/agent-cli-to-api:latest-devops
+antiantiops/gemini-wrapper:latest
+antiantiops/vscode-browser-docker:latest
+antiantiops/openclaw:latest
